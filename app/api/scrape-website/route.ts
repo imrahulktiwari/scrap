@@ -545,48 +545,6 @@ export async function POST(request: Request) {
       ""
   };
 
-  // 6. PRICING SIGNALS
-  let pricing_page_found = false;
-  let pricing_page_url = "";
-
-  $('a[href]').each((_, el) => {
-    const href = $(el).attr('href')?.trim() || "";
-    if (/\/pricing/i.test(href) || /pricing-plans/i.test(href) || /subscription/i.test(href) || /plans/i.test(href)) {
-      pricing_page_found = true;
-      try {
-        pricing_page_url = new URL(href, baseUrl).href;
-      } catch (e) {
-        pricing_page_url = href;
-      }
-      return false; // Break
-    }
-  });
-
-  const free_trial = /\b(free trial|try (for )?free|start (your )?free|get started free|risk free trial)\b/i.test(bodyTextLower);
-  const free_plan = /\b(free plan|free forever|free tier|free version|free package|completely free plan)\b/i.test(bodyTextLower);
-
-  let starting_price = "";
-  const priceRegex = /([$£€₹¥]\s*\d+(?:\.\d{2})?)\s*(?:\/\s*|per\s*|a\s*)?(?:mo|month|year|yr|user|seat)/i;
-  const priceMatch = bodyTextLower.match(priceRegex);
-  if (priceMatch && priceMatch[1]) {
-    starting_price = priceMatch[1] + "/mo";
-  }
-
-  let pricing_model = "Unknown";
-  if (free_plan && starting_price) {
-    pricing_model = "Freemium";
-  } else if (bodyTextLower.includes("pay as you go") || bodyTextLower.includes("usage-based") || bodyTextLower.includes("per credit")) {
-    pricing_model = "Usage-based";
-  } else if (starting_price || bodyTextLower.includes("subscribe") || bodyTextLower.includes("subscription")) {
-    pricing_model = "Subscription";
-  } else if (bodyTextLower.includes("one-time payment") || bodyTextLower.includes("lifetime access") || bodyTextLower.includes("one-time fee")) {
-    pricing_model = "One-time";
-  } else if (bodyTextLower.includes("contact sales") || bodyTextLower.includes("contact for pricing") || bodyTextLower.includes("request a quote")) {
-    pricing_model = "Contact for pricing";
-  } else if (bodyTextLower.includes("100% free") || bodyTextLower.includes("always free") || bodyTextLower.includes("free open source")) {
-    pricing_model = "Free";
-  }
-
   // 7. FEATURES
   interface FeatureItem {
     title: string;
@@ -733,14 +691,6 @@ export async function POST(request: Request) {
       h1_tags,
       h2_tags,
       open_graph
-    },
-    pricing: {
-      pricing_page_found,
-      pricing_page_url,
-      free_trial,
-      free_plan,
-      starting_price,
-      pricing_model
     },
     features,
     integrations,

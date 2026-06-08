@@ -28,11 +28,12 @@ interface AppMetadata {
 }
 
 interface HistoryItem {
-  appId: string;
+  type: "app" | "website";
+  id: string;
   title: string;
   icon: string;
-  category: string;
-  platform: "android" | "ios";
+  subtitle: string;
+  platform?: "android" | "ios";
 }
 
 interface WebMetadata {
@@ -84,14 +85,6 @@ interface WebMetadata {
       og_description: string;
       og_image: string;
     };
-  };
-  pricing: {
-    pricing_page_found: boolean;
-    pricing_page_url: string;
-    free_trial: boolean;
-    free_plan: boolean;
-    starting_price: string;
-    pricing_model: string;
   };
   features: Array<{ title: string; description: string }>;
   integrations: string[];
@@ -154,8 +147,9 @@ const WEBSITE_SAMPLES = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"app" | "website">("app");
   const [url, setUrl] = useState("");
+  const [activeResultType, setActiveResultType] = useState<"app" | "website" | null>(null);
+  
   const [result, setResult] = useState<AppMetadata | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState("");
@@ -165,25 +159,68 @@ export default function Home() {
   const [showJson, setShowJson] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
-  const [webUrl, setWebUrl] = useState("");
   const [webResult, setWebResult] = useState<WebMetadata | null>(null);
-  const [webLoading, setWebLoading] = useState(false);
-  const [webLoadingStep, setWebLoadingStep] = useState("");
-  const [webError, setWebError] = useState<string | null>(null);
   const [webCopied, setWebCopied] = useState(false);
   const [webShowJson, setWebShowJson] = useState(false);
 
   // Load history from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem("gplay_scraper_history");
+    let saved = localStorage.getItem("unified_scraper_history");
+    if (!saved) {
+      saved = localStorage.getItem("gplay_scraper_history");
+    }
     if (saved) {
       try {
-        setHistory(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        const mapped = parsed.map((item: any) => {
+          if (item.type) return item;
+          return {
+            type: "app",
+            id: item.appId || item.id,
+            title: item.title,
+            icon: item.icon,
+            subtitle: item.category || item.subtitle,
+            platform: item.platform,
+          };
+        });
+        setHistory(mapped);
       } catch (e) {
         console.error("Failed to parse scraper history", e);
       }
     }
   }, []);
+
+  const detectInputType = (input: string): "app" | "website" => {
+    const trimmed = input.trim();
+    if (/^\d+$/.test(trimmed)) {
+      return "app";
+    }
+    try {
+      const parsedUrl = new URL(trimmed.startsWith('http') ? trimmed : 'https://' + trimmed);
+      const hostname = parsedUrl.hostname.toLowerCase();
+      if (
+        hostname.includes('play.google.com') || 
+        hostname.includes('apps.apple.com') || 
+        hostname.includes('itunes.apple.com') || 
+        hostname.includes('play.app.goo.gl')
+      ) {
+        return "app";
+      }
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        return "website";
+      }
+    } catch (e) {}
+    
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith('com.') || lower.startsWith('org.') || lower.startsWith('net.')) {
+      return "app";
+    }
+    const domainRegex = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,6}(\/.*)?$/i;
+    if (domainRegex.test(trimmed)) {
+      return "website";
+    }
+    return "app";
+  };
 
   const runScrape = async (inputUrl: string) => {
     if (!inputUrl.trim()) return;
@@ -193,7 +230,6 @@ export default function Home() {
     setDescExpanded(false);
     setShowJson(false);
 
-    // Dynamic step animation
     setLoadingStep("Detecting platform & ID...");
     const stepTimer1 = setTimeout(() => {
       setLoadingStep("Querying app store metadata...");
@@ -218,20 +254,21 @@ export default function Home() {
       }
 
       setResult(data);
+      setActiveResultType("app");
       
-      // Save to history
       const newItem: HistoryItem = {
-        appId: data.appId,
+        type: "app",
+        id: data.appId,
         title: data.title,
         icon: data.icon,
-        category: data.category || data.genre,
+        subtitle: data.category || data.genre,
         platform: data.platform || "android",
       };
 
       setHistory((prev) => {
-        const filtered = prev.filter((item) => item.appId !== data.appId);
+        const filtered = prev.filter((item) => item.id !== data.appId);
         const updated = [newItem, ...filtered].slice(0, 8);
-        localStorage.setItem("gplay_scraper_history", JSON.stringify(updated));
+        localStorage.setItem("unified_scraper_history", JSON.stringify(updated));
         return updated;
       });
     } catch (err: any) {
@@ -244,62 +281,25 @@ export default function Home() {
     }
   };
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    runScrape(url);
-  };
-
-  const handleCopy = () => {
-    if (!result) return;
-    navigator.clipboard.writeText(JSON.stringify(result, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleDownload = () => {
-    if (!result) return;
-    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = `${result.platform}-${result.appId}-metadata.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const deleteHistoryItem = (e: React.MouseEvent, appId: string) => {
-    e.stopPropagation();
-    setHistory((prev) => {
-      const updated = prev.filter((item) => item.appId !== appId);
-      localStorage.setItem("gplay_scraper_history", JSON.stringify(updated));
-      return updated;
-    });
-  };
-
-  const clearAllHistory = () => {
-    setHistory([]);
-    localStorage.removeItem("gplay_scraper_history");
-  };
-
   const runWebScrape = async (inputUrl: string) => {
     if (!inputUrl.trim()) return;
-    setWebLoading(true);
-    setWebError(null);
+    setLoading(true);
+    setError(null);
     setWebResult(null);
     setWebShowJson(false);
 
-    setWebLoadingStep("Validating URL...");
+    setLoadingStep("Validating URL...");
     const stepTimer1 = setTimeout(() => {
-      setWebLoadingStep("Fetching website HTML (up to 10s)...");
+      setLoadingStep("Fetching website HTML (up to 10s)...");
     }, 800);
     const stepTimer2 = setTimeout(() => {
-      setWebLoadingStep("Parsing Cheerio DOM structure...");
+      setLoadingStep("Parsing Cheerio DOM structure...");
     }, 2500);
     const stepTimer3 = setTimeout(() => {
-      setWebLoadingStep("Analyzing SEO keywords, features & pricing...");
+      setLoadingStep("Analyzing SEO keywords, features & pricing...");
     }, 5000);
     const stepTimer4 = setTimeout(() => {
-      setWebLoadingStep("Extracting socials, emails, and tech stack...");
+      setLoadingStep("Extracting socials, emails, and tech stack...");
     }, 7500);
 
     try {
@@ -318,21 +318,71 @@ export default function Home() {
       }
 
       setWebResult(data);
+      setActiveResultType("website");
+
+      const newItem: HistoryItem = {
+        type: "website",
+        id: data.url,
+        title: data.business_info.company_name || data.basic_info.page_title || data.url,
+        icon: data.basic_info.favicon_url || "",
+        subtitle: data.business_info.industry_type || "Website",
+      };
+
+      setHistory((prev) => {
+        const filtered = prev.filter((item) => item.id !== data.url);
+        const updated = [newItem, ...filtered].slice(0, 8);
+        localStorage.setItem("unified_scraper_history", JSON.stringify(updated));
+        return updated;
+      });
     } catch (err: any) {
-      setWebError(err.message || "An unexpected error occurred.");
+      setError(err.message || "An unexpected error occurred.");
     } finally {
       clearTimeout(stepTimer1);
       clearTimeout(stepTimer2);
       clearTimeout(stepTimer3);
       clearTimeout(stepTimer4);
-      setWebLoading(false);
-      setWebLoadingStep("");
+      setLoading(false);
+      setLoadingStep("");
     }
   };
 
-  const handleWebSubmit = (e: React.FormEvent) => {
+  const triggerScrape = (input: string) => {
+    setUrl(input);
+    setResult(null);
+    setWebResult(null);
+    setActiveResultType(null);
+    setError(null);
+    
+    const detected = detectInputType(input);
+    if (detected === "app") {
+      runScrape(input);
+    } else {
+      runWebScrape(input);
+    }
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    runWebScrape(webUrl);
+    if (!url.trim()) return;
+    triggerScrape(url);
+  };
+
+  const handleCopy = () => {
+    if (!result) return;
+    navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    if (!result) return;
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = `${result.platform}-${result.appId}-metadata.json`;
+    a.click();
+    URL.revokeObjectURL(blobUrl);
   };
 
   const handleWebCopy = () => {
@@ -357,6 +407,20 @@ export default function Home() {
     URL.revokeObjectURL(blobUrl);
   };
 
+  const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setHistory((prev) => {
+      const updated = prev.filter((item) => item.id !== id);
+      localStorage.setItem("unified_scraper_history", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const clearAllHistory = () => {
+    setHistory([]);
+    localStorage.removeItem("unified_scraper_history");
+  };
+
   return (
     <main className="relative min-h-screen bg-[#070b19] text-slate-100 overflow-x-hidden font-sans pb-20">
       {/* Decorative background glow blobs */}
@@ -369,57 +433,21 @@ export default function Home() {
         {/* Header / Hero */}
         <div className="text-center space-y-4 mb-10">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 text-xs font-semibold tracking-wide uppercase">
-            {activeTab === "app" ? "⚡ Play Store & App Store Scraper" : "🌐 Website Metadata Scraper"}
+            ⚡ Universal Intelligence Scraper
           </div>
           <h1 className="text-4xl sm:text-5xl font-black tracking-tight bg-gradient-to-r from-blue-400 via-teal-400 to-emerald-400 bg-clip-text text-transparent">
-            {activeTab === "app" ? "Apps Meta Data Extractor" : "Website Intelligence Scraper"}
+            Web & App Intelligence Scraper
           </h1>
           <p className="text-slate-400 max-w-lg mx-auto text-sm sm:text-base">
-            {activeTab === "app"
-              ? "Extract official websites, categories, description, scores, developer info, and full app details from Google Play and Apple iOS App Store links."
-              : "Scrape and parse public HTML server-side to extract contact info, social handles, SEO tags, pricing structures, tech stack, and key features."}
+            Extract app metadata from Google Play and Apple App Store, or scrape SEO, business intelligence, tech stack, and contact details from any website URL.
           </p>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex justify-center mb-8">
-          <div className="inline-flex p-1 bg-slate-900/80 border border-slate-800 rounded-xl">
-            <button
-              onClick={() => setActiveTab("app")}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all flex items-center gap-2 ${
-                activeTab === "app"
-                  ? "bg-gradient-to-r from-blue-500 to-teal-500 text-white shadow"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-              </svg>
-              App Scraper
-            </button>
-            <button
-              onClick={() => setActiveTab("website")}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all flex items-center gap-2 ${
-                activeTab === "website"
-                  ? "bg-gradient-to-r from-blue-500 to-teal-500 text-white shadow"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-              </svg>
-              Website Scraper
-            </button>
-          </div>
-        </div>
-
-        {activeTab === "app" && (
-          <>
-            {/* Input & Examples Card */}
+        {/* Input & Examples Card */}
         <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6 mb-8">
           <form onSubmit={handleSearchSubmit} className="space-y-4">
-            <label htmlFor="playstore-input" className="block text-xs font-bold uppercase tracking-wider text-slate-400">
-              App Store URL, package name, or App Store ID
+            <label htmlFor="scraper-input" className="block text-xs font-bold uppercase tracking-wider text-slate-400">
+              Website URL, App Store link, Package name, or App Store ID
             </label>
             <div className="relative flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
@@ -429,11 +457,11 @@ export default function Home() {
                   </svg>
                 </div>
                 <input
-                  id="playstore-input"
+                  id="scraper-input"
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  placeholder="Paste URL (Google Play or Apple App Store) or package ID (e.g. 310633997)"
+                  placeholder="Paste URL (e.g. stripe.com) or App Store package ID (e.g. com.whatsapp)"
                   className="w-full pl-11 pr-10 py-3.5 bg-slate-950/80 border border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/80 text-sm placeholder:text-slate-500 transition-all text-slate-100"
                   disabled={loading}
                 />
@@ -474,8 +502,8 @@ export default function Home() {
             </div>
           </form>
 
-          {/* Quick Demo Section split by platform */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Quick Demo Section split by category */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-slate-800/60">
             <div className="space-y-2.5">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
                 <svg className="w-3.5 h-3.5 text-green-500 fill-current" viewBox="0 0 24 24">
@@ -487,10 +515,7 @@ export default function Home() {
                 {ANDROID_SAMPLES.map((app) => (
                   <button
                     key={app.appId}
-                    onClick={() => {
-                      setUrl(app.appId);
-                      runScrape(app.appId);
-                    }}
+                    onClick={() => triggerScrape(app.appId)}
                     disabled={loading}
                     className={`px-3 py-1.5 rounded-lg border text-xs font-medium bg-gradient-to-br hover:scale-102 active:scale-98 transition-all duration-200 cursor-pointer ${app.color}`}
                   >
@@ -511,14 +536,32 @@ export default function Home() {
                 {IOS_SAMPLES.map((app) => (
                   <button
                     key={app.appId}
-                    onClick={() => {
-                      setUrl(app.appId);
-                      runScrape(app.appId);
-                    }}
+                    onClick={() => triggerScrape(app.appId)}
                     disabled={loading}
                     className={`px-3 py-1.5 rounded-lg border text-xs font-medium bg-gradient-to-br hover:scale-102 active:scale-98 transition-all duration-200 cursor-pointer ${app.color}`}
                   >
                     {app.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5 text-blue-400 fill-current" viewBox="0 0 24 24" stroke="none">
+                  <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.4z" />
+                </svg>
+                Website Examples
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {WEBSITE_SAMPLES.map((site) => (
+                  <button
+                    key={site.url}
+                    onClick={() => triggerScrape(site.url)}
+                    disabled={loading}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-medium bg-gradient-to-br hover:scale-102 active:scale-98 transition-all duration-200 cursor-pointer ${site.color}`}
+                  >
+                    {site.name}
                   </button>
                 ))}
               </div>
@@ -534,7 +577,7 @@ export default function Home() {
               <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 border-r-teal-500 animate-spin" />
             </div>
             <p className="text-blue-400 font-semibold text-sm animate-pulse">{loadingStep}</p>
-            <p className="text-xs text-slate-500">Retrieving official website links and App Store categorization...</p>
+            <p className="text-xs text-slate-500">Retrieving details and parsing structured intelligence...</p>
           </div>
         )}
 
@@ -551,8 +594,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Scrape Result Output */}
-        {result && (
+        {/* App Scrape Result Output */}
+        {activeResultType === "app" && result && (
           <div className="space-y-6">
             {/* Visual Metadata Profile Card */}
             <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
@@ -797,186 +840,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Recent Search History Card */}
-        {history.length > 0 && (
-          <div className="mt-8 bg-slate-900/40 backdrop-blur-md border border-slate-800/60 rounded-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Recent Extracted Apps
-              </h3>
-              <button
-                onClick={clearAllHistory}
-                className="text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1 cursor-pointer"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                Clear History
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {history.map((item) => (
-                <div
-                  key={item.appId}
-                  onClick={() => {
-                    setUrl(item.appId);
-                    runScrape(item.appId);
-                  }}
-                  className="bg-slate-950/40 hover:bg-slate-950/90 border border-slate-800 hover:border-slate-700 rounded-xl p-3 flex items-center gap-3 transition-all cursor-pointer group"
-                >
-                  <img src={item.icon} alt={item.title} className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800" />
-                  <div className="flex-1 min-w-0">
-                    <span className="font-semibold text-xs text-slate-200 group-hover:text-blue-400 transition-colors truncate block flex items-center gap-1.5">
-                      {item.platform === "ios" ? (
-                        <svg className="w-3 h-3 text-slate-400 fill-current flex-shrink-0" viewBox="0 0 24 24">
-                          <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 4.17c.66-.81 1.11-1.93.99-3.06-.96.04-2.13.64-2.82 1.45-.6.69-1.12 1.84-.98 2.94.1.08 2.15.48 2.81-.33z"/>
-                        </svg>
-                      ) : (
-                        <svg className="w-3 h-3 text-emerald-400 fill-current flex-shrink-0" viewBox="0 0 24 24">
-                          <path d="M5.23 2.5a.75.75 0 00-.77.72v17.56a.75.75 0 001.2.6l14.18-8.78a.75.75 0 000-1.2L5.86 2.62a.75.75 0 00-.63-.12zm.73 2.16l11.45 7.09L5.96 18.84V4.66z" />
-                        </svg>
-                      )}
-                      <span className="truncate">{item.title}</span>
-                    </span>
-                    <span className="text-[10px] text-slate-500 truncate block">
-                      {item.category || item.appId}
-                    </span>
-                  </div>
-                  <button
-                    onClick={(e) => deleteHistoryItem(e, item.appId)}
-                    className="p-1.5 text-slate-600 hover:text-rose-400 hover:bg-slate-900 rounded-lg transition-all"
-                    title="Delete item"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </>
-    )}
-
-    {activeTab === "website" && (
-      <div className="space-y-8 animate-fadeIn">
-        {/* Input & Examples Card */}
-        <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
-          <form onSubmit={handleWebSubmit} className="space-y-4">
-            <label htmlFor="website-input" className="block text-xs font-bold uppercase tracking-wider text-slate-400">
-              Website URL
-            </label>
-            <div className="relative flex flex-col sm:flex-row gap-2">
-              <div className="relative flex-1">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                </div>
-                <input
-                  id="website-input"
-                  type="text"
-                  value={webUrl}
-                  onChange={(e) => setWebUrl(e.target.value)}
-                  placeholder="Paste website URL (e.g. https://stripe.com or linear.app)"
-                  className="w-full pl-11 pr-10 py-3.5 bg-slate-950/80 border border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/80 text-sm placeholder:text-slate-500 transition-all text-slate-100"
-                  disabled={webLoading}
-                />
-                {webUrl && (
-                  <button
-                    type="button"
-                    onClick={() => setWebUrl("")}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300 transition-colors"
-                  >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-              <button
-                type="submit"
-                disabled={webLoading || !webUrl.trim()}
-                className="px-6 py-3.5 bg-gradient-to-r from-blue-500 to-teal-500 hover:from-blue-600 hover:to-teal-600 active:scale-98 disabled:opacity-50 disabled:pointer-events-none rounded-xl text-white font-semibold text-sm shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 whitespace-nowrap"
-              >
-                {webLoading ? (
-                  <>
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    Scraping...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Extract Data
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-
-          {/* Quick Website Examples */}
-          <div className="space-y-2.5">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-              <svg className="w-3.5 h-3.5 text-blue-400 fill-current" viewBox="0 0 24 24" stroke="none">
-                <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.4z" />
-              </svg>
-              Popular Website Examples
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {WEBSITE_SAMPLES.map((site) => (
-                <button
-                  key={site.url}
-                  onClick={() => {
-                    setWebUrl(site.url);
-                    runWebScrape(site.url);
-                  }}
-                  disabled={webLoading}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium bg-gradient-to-br hover:scale-102 active:scale-98 transition-all duration-200 cursor-pointer ${site.color}`}
-                >
-                  {site.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Loading Spinner & Active step */}
-        {webLoading && (
-          <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/40 rounded-2xl p-10 text-center flex flex-col items-center justify-center space-y-4">
-            <div className="relative w-16 h-16">
-              <div className="absolute inset-0 rounded-full border-4 border-blue-500/10" />
-              <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 border-r-teal-500 animate-spin" />
-            </div>
-            <p className="text-blue-400 font-semibold text-sm animate-pulse">{webLoadingStep}</p>
-            <p className="text-xs text-slate-500">Retrieving public HTML and parsing structured business intelligence details...</p>
-          </div>
-        )}
-
-        {/* Error Card */}
-        {webError && (
-          <div className="bg-rose-950/30 border border-rose-500/30 rounded-2xl p-4 sm:p-5 text-rose-400 flex items-start gap-3 shadow-lg animate-shake">
-            <svg className="w-6 h-6 flex-shrink-0 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <div className="space-y-1">
-              <span className="font-bold text-sm">Extraction Failed</span>
-              <p className="text-xs text-rose-300 leading-relaxed">{webError}</p>
-            </div>
-          </div>
-        )}
-
         {/* Website Scrape Result Output */}
-        {webResult && (
+        {activeResultType === "website" && webResult && (
           <div className="space-y-6">
             {/* Visual Metadata Profile Card */}
             <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
@@ -1040,17 +905,11 @@ export default function Home() {
               </div>
 
               {/* Grid of Key Info */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="bg-slate-950/60 border border-slate-800/50 rounded-xl p-3.5 space-y-1.5">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Crawl Speed</span>
                   <span className="text-white font-extrabold text-sm block">
                     {webResult.crawl_time_ms} ms
-                  </span>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800/50 rounded-xl p-3.5 space-y-1.5">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Pricing Model</span>
-                  <span className="text-white font-extrabold text-sm block truncate" title={webResult.pricing.pricing_model}>
-                    {webResult.pricing.pricing_model}
                   </span>
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800/50 rounded-xl p-3.5 space-y-1.5">
@@ -1417,56 +1276,7 @@ export default function Home() {
                 </div>
               </CollapsibleCard>
 
-              {/* Card 5: Pricing Signals */}
-              <CollapsibleCard
-                title="Pricing Signals"
-                icon={
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                }
-              >
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Inferred Pricing Model</span>
-                      <span className="text-slate-200 text-xs font-bold block">{webResult.pricing.pricing_model}</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Estimated Starting Price</span>
-                      <span className="text-teal-400 text-xs font-extrabold block">{webResult.pricing.starting_price || "No currency figure extracted"}</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Pricing / Subscription Link Found</span>
-                      {webResult.pricing.pricing_page_found ? (
-                        <a href={webResult.pricing.pricing_page_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 hover:underline text-xs break-all block mt-0.5">
-                          {webResult.pricing.pricing_page_url}
-                        </a>
-                      ) : (
-                        <span className="text-slate-500 text-xs block">None parsed</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2.5 bg-slate-950/30 border border-slate-800/60 rounded-xl p-3">
-                      <div className={`w-3.5 h-3.5 rounded-full flex-shrink-0 ${webResult.pricing.free_trial ? 'bg-emerald-500' : 'bg-slate-700'}`} />
-                      <div>
-                        <span className="text-xs font-bold text-slate-200 block">Offers Free Trial</span>
-                        <span className="text-[10px] text-slate-500 block">Mentions keyword &ldquo;free trial&rdquo; on homepage</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2.5 bg-slate-950/30 border border-slate-800/60 rounded-xl p-3">
-                      <div className={`w-3.5 h-3.5 rounded-full flex-shrink-0 ${webResult.pricing.free_plan ? 'bg-emerald-500' : 'bg-slate-700'}`} />
-                      <div>
-                        <span className="text-xs font-bold text-slate-200 block">Offers Free Plan</span>
-                        <span className="text-[10px] text-slate-500 block">Mentions &ldquo;free forever&rdquo; or &ldquo;free plan&rdquo;</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </CollapsibleCard>
-
-              {/* Card 6: Features & Integrations */}
+              {/* Card 5: Features & Integrations */}
               <CollapsibleCard
                 title="Features & Integrations"
                 icon={
@@ -1510,8 +1320,88 @@ export default function Home() {
             </div>
           </div>
         )}
-      </div>
-    )}
+
+        {/* Recent Search History Card */}
+        {history.length > 0 && (
+          <div className="mt-8 bg-slate-900/40 backdrop-blur-md border border-slate-800/60 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Recent Extracted Metadata
+              </h3>
+              <button
+                onClick={clearAllHistory}
+                className="text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Clear History
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {history.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => triggerScrape(item.id)}
+                  className="bg-slate-950/40 hover:bg-slate-950/90 border border-slate-800 hover:border-slate-700 rounded-xl p-3 flex items-center gap-3 transition-all cursor-pointer group"
+                >
+                  {item.icon ? (
+                    <img
+                      src={item.icon}
+                      alt={item.title}
+                      className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 object-contain p-1"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2338bdf8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3M9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9'%3E%3C/path%3E%3C/svg%3E";
+                      }}
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-blue-400">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                      </svg>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold text-xs text-slate-200 group-hover:text-blue-400 transition-colors truncate block flex items-center gap-1.5">
+                      {item.type === "app" ? (
+                        item.platform === "ios" ? (
+                          <svg className="w-3 h-3 text-slate-400 fill-current flex-shrink-0" viewBox="0 0 24 24">
+                            <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 4.17c.66-.81 1.11-1.93.99-3.06-.96.04-2.13.64-2.82 1.45-.6.69-1.12 1.84-.98 2.94.1.08 2.15.48 2.81-.33z"/>
+                          </svg>
+                        ) : (
+                          <svg className="w-3 h-3 text-emerald-400 fill-current flex-shrink-0" viewBox="0 0 24 24">
+                            <path d="M5.23 2.5a.75.75 0 00-.77.72v17.56a.75.75 0 001.2.6l14.18-8.78a.75.75 0 000-1.2L5.86 2.62a.75.75 0 00-.63-.12zm.73 2.16l11.45 7.09L5.96 18.84V4.66z" />
+                          </svg>
+                        )
+                      ) : (
+                        <svg className="w-3 h-3 text-blue-400 fill-current flex-shrink-0" viewBox="0 0 24 24">
+                          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.4z" />
+                        </svg>
+                      )}
+                      <span className="truncate">{item.title}</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500 truncate block">
+                      {item.subtitle || item.id}
+                    </span>
+                  </div>
+                  <button
+                    onClick={(e) => deleteHistoryItem(e, item.id)}
+                    className="p-1.5 text-slate-600 hover:text-rose-400 hover:bg-slate-900 rounded-lg transition-all"
+                    title="Delete item"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
